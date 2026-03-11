@@ -19,8 +19,9 @@ def get_build_id():
 
         r = requests.get(BASE_URL, headers=headers, timeout=10)
 
+        print("Homepage status:", r.status_code)
+
         if r.status_code != 200:
-            print("Homepage request failed:", r.status_code)
             return None
 
         html = r.text
@@ -30,7 +31,7 @@ def get_build_id():
         if match:
             return match.group(1)
 
-        print("Build ID not found in HTML")
+        print("Build ID not found")
         return None
 
     except Exception as e:
@@ -41,7 +42,13 @@ def get_build_id():
 def clean_vehicle_data(data):
 
     try:
-        messages = data["pageProps"]["rtoDetailsReponse"]["webSections"][0]["messages"]
+
+        messages = (
+            data.get("pageProps", {})
+            .get("rtoDetailsReponse", {})
+            .get("webSections", [{}])[0]
+            .get("messages", [])
+        )
 
         result = {
             "rto_code": None,
@@ -52,8 +59,8 @@ def clean_vehicle_data(data):
 
         for item in messages:
 
-            title = item["title"]
-            value = item["subtitle"]
+            title = item.get("title")
+            value = item.get("subtitle")
 
             if title == "Number":
                 result["rto_code"] = value
@@ -69,7 +76,8 @@ def clean_vehicle_data(data):
 
         return result
 
-    except:
+    except Exception as e:
+        print("Parsing error:", e)
         return None
 
 
@@ -82,25 +90,35 @@ def vehicle_lookup(number: str = Query(...), passkey: str = Query(...)):
     build_id = get_build_id()
 
     if not build_id:
-        raise HTTPException(status_code=500, detail="Build ID detection failed")
-
-    url = BASE_URL + API_PATH.format(build=build_id, vehicle=number)
-
-    headers = {
-        "User-Agent": "Mozilla/5.0"
-    }
-
-    r = requests.get(url, headers=headers, timeout=10)
-
-    if r.status_code != 200:
         return {
-            "vehicle_number": number,
-            "status": "not_found",
-            "message": "No vehicle data available",
+            "status": "error",
+            "message": "Build ID detection failed",
             "developer": "@captainpapaj1"
         }
 
-    data = r.json()
+    url = BASE_URL + API_PATH.format(build=build_id, vehicle=number)
+
+    headers = {"User-Agent": "Mozilla/5.0"}
+
+    try:
+        r = requests.get(url, headers=headers, timeout=10)
+        print("API status:", r.status_code)
+
+        if r.status_code != 200:
+            return {
+                "vehicle_number": number,
+                "status": "not_found",
+                "developer": "@captainpapaj1"
+            }
+
+        data = r.json()
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": str(e),
+            "developer": "@captainpapaj1"
+        }
 
     cleaned = clean_vehicle_data(data)
 
@@ -108,7 +126,6 @@ def vehicle_lookup(number: str = Query(...), passkey: str = Query(...)):
         return {
             "vehicle_number": number,
             "status": "not_found",
-            "message": "No vehicle data available",
             "developer": "@captainpapaj1"
         }
 
