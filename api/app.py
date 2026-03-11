@@ -42,7 +42,6 @@ def get_build_id():
 def clean_vehicle_data(data):
 
     try:
-
         messages = (
             data.get("pageProps", {})
             .get("rtoDetailsReponse", {})
@@ -101,6 +100,7 @@ def vehicle_lookup(number: str = Query(...), passkey: str = Query(...)):
     headers = {"User-Agent": "Mozilla/5.0"}
 
     try:
+
         r = requests.get(url, headers=headers, timeout=10)
         print("API status:", r.status_code)
 
@@ -111,7 +111,14 @@ def vehicle_lookup(number: str = Query(...), passkey: str = Query(...)):
                 "developer": "@captainpapaj1"
             }
 
-        data = r.json()
+        try:
+            data = r.json()
+        except:
+            return {
+                "status": "error",
+                "message": "Source did not return JSON",
+                "developer": "@captainpapaj1"
+            }
 
     except Exception as e:
         return {
