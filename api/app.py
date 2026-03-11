@@ -63,7 +63,7 @@ def fetch_vehicle_data(vehicle_number):
                 result["state"] = value
 
             elif title == "RTO Phone number":
-                result["phone"] = value
+                result["phone"] = value.replace("-", "")
 
         return result
 
