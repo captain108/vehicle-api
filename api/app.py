@@ -12,7 +12,17 @@ API_PATH = os.getenv("CARINFO_PATH")
 
 def get_build_id():
     try:
-        r = requests.get(BASE_URL)
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+            "Accept": "text/html,application/xhtml+xml",
+            "Accept-Language": "en-US,en;q=0.9"
+        }
+
+        r = requests.get(BASE_URL, headers=headers, timeout=10)
+
+        if r.status_code != 200:
+            return None
+
         html = r.text
 
         match = re.search(r'"buildId":"(.*?)"', html)
@@ -20,7 +30,10 @@ def get_build_id():
         if match:
             return match.group(1)
 
-    except:
+        return None
+
+    except Exception as e:
+        print("Build ID error:", e)
         return None
 
 
@@ -76,7 +89,7 @@ def vehicle_lookup(number: str = Query(...), passkey: str = Query(...)):
         "User-Agent": "Mozilla/5.0"
     }
 
-    r = requests.get(url, headers=headers)
+    r = requests.get(url, headers=headers, timeout=10)
 
     if r.status_code != 200:
         return {
