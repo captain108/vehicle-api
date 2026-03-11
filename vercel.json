@@ -3,11 +3,5 @@
     "api/app.py": {
       "runtime": "@vercel/python@3.11"
     }
-  },
-  "routes": [
-    {
-      "src": "/(.*)",
-      "dest": "api/app.py"
-    }
-  ]
+  }
 }
