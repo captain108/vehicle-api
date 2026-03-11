@@ -13,23 +13,24 @@ API_PATH = os.getenv("CARINFO_PATH")
 def get_build_id():
     try:
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-            "Accept": "text/html,application/xhtml+xml",
-            "Accept-Language": "en-US,en;q=0.9"
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "text/html"
         }
 
         r = requests.get(BASE_URL, headers=headers, timeout=10)
 
         if r.status_code != 200:
+            print("Homepage request failed:", r.status_code)
             return None
 
         html = r.text
 
-        match = re.search(r'"buildId":"(.*?)"', html)
+        match = re.search(r'"buildId":"([^"]+)"', html)
 
         if match:
             return match.group(1)
 
+        print("Build ID not found in HTML")
         return None
 
     except Exception as e:
