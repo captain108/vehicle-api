@@ -9,9 +9,9 @@ app = FastAPI()
 
 PASSKEY = os.getenv("API_PASSKEY")
 
-RC_URL = os.getenv("RC_URL")
-RTO_URL = os.getenv("RTO_URL")
-CHALLAN_URL = os.getenv("CHALLAN_URL")
+RC_URL = os.getenv("RC_URL", "")
+RTO_URL = os.getenv("RTO_URL", "")
+CHALLAN_URL = os.getenv("CHALLAN_URL", "")
 
 COOKIE = os.getenv("CARINFO_COOKIE")
 
@@ -46,9 +46,11 @@ def get_proxy():
 def fetch_page(url):
 
     headers = {
-        "User-Agent": "Mozilla/5.0",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml",
         "Cookie": COOKIE
     }
+    
 
     try:
 
@@ -95,7 +97,12 @@ def get_rc(vehicle):
 
     props = data.get("props", {}).get("pageProps", {})
 
-    vehicle_info = props.get("vehicleDetails", {})
+    vehicle_info = (
+        props.get("vehicleDetails")
+        or props.get("vehicle")
+        or props.get("vehicleInfo")
+        or {}
+    )
 
     return {
 
