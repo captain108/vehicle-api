@@ -19,6 +19,7 @@ def fetch_vehicle_data(vehicle_number):
     }
 
     try:
+
         r = requests.get(url, headers=headers, timeout=10)
 
         if r.status_code != 200:
@@ -33,15 +34,27 @@ def fetch_vehicle_data(vehicle_number):
 
         data = json.loads(script.string)
 
+        page = data.get("props", {}).get("pageProps", {})
+
+        # -------- VEHICLE TOP INFO --------
+
+        vehicle_info = page.get("vehicleDetailsResponse", {})
+
+        make_model = vehicle_info.get("makeModel")
+        owner_name = vehicle_info.get("ownerName")
+
+        # -------- RTO DETAILS --------
+
         messages = (
-            data.get("props", {})
-            .get("pageProps", {})
+            page
             .get("rtoDetailsReponse", {})
             .get("webSections", [{}])[0]
             .get("messages", [])
         )
 
         result = {
+            "make_model": make_model,
+            "owner_name": owner_name,
             "rto_code": None,
             "address": None,
             "state": None,
@@ -63,7 +76,7 @@ def fetch_vehicle_data(vehicle_number):
                 result["state"] = value
 
             elif title == "RTO Phone number":
-                result["phone"] = value.replace("-", "")
+                result["phone"] = value.replace("-", "").replace(" ", "")
 
         return result
 
