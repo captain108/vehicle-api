@@ -1,8 +1,9 @@
 import os
 import json
+import random
 import requests
-from bs4 import BeautifulSoup
 from fastapi import FastAPI, Query, HTTPException
+from bs4 import BeautifulSoup
 
 app = FastAPI()
 
@@ -12,17 +13,68 @@ RC_URL = os.getenv("RC_URL")
 RTO_URL = os.getenv("RTO_URL")
 CHALLAN_URL = os.getenv("CHALLAN_URL")
 
+COOKIE = os.getenv("CARINFO_COOKIE")
+
+
+# ---------------- PROXY ----------------
+
+def load_proxies():
+    try:
+        with open("proxies.txt") as f:
+            return [p.strip() for p in f if p.strip()]
+    except:
+        return []
+
+PROXIES = load_proxies()
+
+
+def get_proxy():
+
+    if not PROXIES:
+        return None
+
+    proxy = random.choice(PROXIES)
+
+    return {
+        "http": f"http://{proxy}",
+        "https": f"http://{proxy}"
+    }
+
+
+# ---------------- REQUEST ----------------
+
+def fetch_page(url):
+
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Cookie": COOKIE
+    }
+
+    try:
+
+        r = requests.get(
+            url,
+            headers=headers,
+            proxies=get_proxy(),
+            timeout=20
+        )
+
+        return r.text
+
+    except:
+        return None
+
+
+# ---------------- NEXT DATA PARSER ----------------
 
 def get_next_data(url):
 
-    headers = {"User-Agent": "Mozilla/5.0"}
+    html = fetch_page(url)
 
-    r = requests.get(url, headers=headers, timeout=15)
-
-    if r.status_code != 200:
+    if not html:
         return None
 
-    soup = BeautifulSoup(r.text, "html.parser")
+    soup = BeautifulSoup(html, "html.parser")
 
     script = soup.find("script", {"id": "__NEXT_DATA__"})
 
@@ -34,58 +86,76 @@ def get_next_data(url):
 
 # ---------------- RC DETAILS ----------------
 
-def get_rc_data(vehicle):
+def get_rc(vehicle):
 
     data = get_next_data(RC_URL + vehicle)
 
     if not data:
         return {}
 
-    page = data.get("props", {}).get("pageProps", {})
-    vehicle_details = page.get("vehicleDetailsResponse", {})
+    props = data.get("props", {}).get("pageProps", {})
 
-    result = {}
+    vehicle_info = props.get("vehicleDetails", {})
 
-    result["vehicle_number"] = vehicle
-    result["make_model"] = vehicle_details.get("makeModel")
-    result["owner_name"] = vehicle_details.get("ownerName")
+    return {
 
-    result["vehicle_class"] = vehicle_details.get("vehicleClass")
-    result["fuel_type"] = vehicle_details.get("fuelType")
-    result["fuel_norms"] = vehicle_details.get("fuelNorms")
+        "vehicle_number": vehicle,
 
-    result["registration_date"] = vehicle_details.get("registrationDate")
-    result["fitness_upto"] = vehicle_details.get("fitnessUpto")
+        "make_model": vehicle_info.get("makeModel"),
+        "owner_name": vehicle_info.get("ownerName"),
 
-    result["insurance_upto"] = vehicle_details.get("insuranceUpto")
-    result["insurance_status"] = vehicle_details.get("insuranceStatus")
+        "vehicle_class": vehicle_info.get("vehicleClass"),
+        "fuel_type": vehicle_info.get("fuelType"),
+        "fuel_norms": vehicle_info.get("fuelNorms"),
 
-    result["rc_status"] = vehicle_details.get("rcStatus")
-    result["unloaded_weight"] = vehicle_details.get("unladenWeight")
-    result["number_of_seats"] = vehicle_details.get("seatCapacity")
+        "registration_date": vehicle_info.get("registrationDate"),
+        "fitness_upto": vehicle_info.get("fitnessUpto"),
 
-    return result
+        "insurance_upto": vehicle_info.get("insuranceUpto"),
+        "insurance_status": vehicle_info.get("insuranceStatus"),
+
+        "rc_status": vehicle_info.get("rcStatus"),
+        "unloaded_weight": vehicle_info.get("unladenWeight"),
+        "number_of_seats": vehicle_info.get("seatCapacity")
+
+    }
+
+
+# ---------------- CLEAN PHONE ----------------
+
+def clean_phone(phone):
+
+    if not phone:
+        return None
+
+    phone = phone.strip()
+
+    phone = phone.replace("-", "")
+    phone = phone.replace(" ", "")
+    phone = phone.replace("(", "")
+    phone = phone.replace(")", "")
+
+    return phone
 
 
 # ---------------- RTO DETAILS ----------------
 
-def get_rto_data(vehicle):
+def get_rto(vehicle):
 
     data = get_next_data(RTO_URL + vehicle)
 
     if not data:
         return {}
 
-    page = data.get("props", {}).get("pageProps", {})
-    rto_details = page.get("rtoDetailsReponse", {})
-
-    result = {}
-
     messages = (
-        rto_details
+        data.get("props", {})
+        .get("pageProps", {})
+        .get("rtoDetailsReponse", {})
         .get("webSections", [{}])[0]
         .get("messages", [])
     )
+
+    result = {}
 
     for item in messages:
 
@@ -101,47 +171,71 @@ def get_rto_data(vehicle):
         elif title == "State":
             result["state"] = value
 
+        elif title == "RTO Phone number":
+            result["phone"] = clean_phone(value)
+
     return result
 
 
-# ---------------- CHALLAN ----------------
+# ---------------- CHALLAN DETAILS ----------------
 
 def get_challan(vehicle):
 
     data = get_next_data(CHALLAN_URL + vehicle)
 
     if not data:
-        return {"challan_pending": None}
+        return {
+            "challan_pending": None,
+            "challan_count": 0
+        }
 
-    page = data.get("props", {}).get("pageProps", {})
+    try:
 
-    challans = page.get("challanResponse", {}).get("pending", [])
+        challans = (
+            data.get("props", {})
+            .get("pageProps", {})
+            .get("challans", [])
+        )
 
-    return {
-        "challan_pending": len(challans) > 0,
-        "challan_count": len(challans)
-    }
+        return {
+            "challan_pending": len(challans) > 0,
+            "challan_count": len(challans)
+        }
+
+    except:
+
+        return {
+            "challan_pending": False,
+            "challan_count": 0
+        }
 
 
 # ---------------- MAIN API ----------------
 
 @app.get("/api/vehicle")
-def vehicle_lookup(number: str = Query(...), passkey: str = Query(...)):
+
+def vehicle_lookup(
+    number: str = Query(...),
+    passkey: str = Query(...)
+):
 
     if passkey != PASSKEY:
         raise HTTPException(status_code=403, detail="Invalid passkey")
 
-    rc = get_rc_data(number)
-    rto = get_rto_data(number)
+    rc = get_rc(number)
+    rto = get_rto(number)
     challan = get_challan(number)
 
     data = {}
+
     data.update(rc)
     data.update(rto)
     data.update(challan)
 
     return {
+
         "status": "success",
         "data": data,
         "developer": "@captainpapaj1"
+
     }
