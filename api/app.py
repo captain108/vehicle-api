@@ -14,19 +14,18 @@ import pytz
 # CONFIG
 # ============================================================
 
-app = FastAPI(title="Unified Lookup API", version="1.0.0")
+app = FastAPI(title="Unified Lookup API", version="2.0.0")
 
 PASSKEY       = os.getenv("API_PASSKEY", "pak_captain123")
-RC_URL        = os.getenv("RC_URL", "")
-RTO_URL       = os.getenv("RTO_URL", "")
-CHALLAN_URL   = os.getenv("CHALLAN_URL", "")
+RC_URL        = os.getenv("RC_URL", "https://www.carinfo.app/rc-details/")
+RTO_URL       = os.getenv("RTO_URL", "https://www.carinfo.app/rto-vehicle-registration-detail/")
+CHALLAN_URL   = os.getenv("CHALLAN_URL", "https://www.carinfo.app/e-challan-check/")
 COOKIE        = os.getenv("CARINFO_COOKIE", "")
-SELF_URL      = os.getenv("SELF_URL", "")  # e.g. https://num-user-rinm.onrender.com/
+SELF_URL      = os.getenv("SELF_URL", "")
 OWNER         = "@captainpapaj1"
 
-# In-memory cache: { key: (timestamp, payload) }
 CACHE = {}
-CACHE_TTL = 300  # 5 minutes
+CACHE_TTL = 300
 
 
 # ============================================================
@@ -86,7 +85,7 @@ def get_proxy():
 
 
 # ============================================================
-# HTTP FETCH
+# FETCH
 # ============================================================
 
 HEADERS = {
@@ -96,6 +95,7 @@ HEADERS = {
         "Chrome/120.0.0.0 Safari/537.36"
     ),
     "Accept": "text/html,application/xhtml+xml,application/json",
+    "Accept-Language": "en-IN,en;q=0.9",
 }
 
 
@@ -103,9 +103,8 @@ def fetch_page(url):
     headers = dict(HEADERS)
     if COOKIE:
         headers["Cookie"] = COOKIE
-
     try:
-        r = requests.get(url, headers=headers, proxies=get_proxy(), timeout=20)
+        r = requests.get(url, headers=headers, proxies=get_proxy(), timeout=25)
         if r.status_code != 200:
             return None
         return r.text
@@ -113,24 +112,8 @@ def fetch_page(url):
         return None
 
 
-def get_next_data(url):
-    html = fetch_page(url)
-    if not html:
-        return None
-
-    soup = BeautifulSoup(html, "html.parser")
-    script = soup.find("script", {"id": "__NEXT_DATA__"})
-    if not script or not script.string:
-        return None
-
-    try:
-        return json.loads(script.string)
-    except Exception:
-        return None
-
-
 # ============================================================
-# RC / RTO / CHALLAN SCRAPERS
+# HELPERS
 # ============================================================
 
 def clean_phone(phone):
@@ -142,102 +125,146 @@ def clean_phone(phone):
     return phone
 
 
+def class_contains(soup, tag, substring):
+    """Find first element whose class contains substring."""
+    for el in soup.find_all(tag):
+        classes = el.get("class") or []
+        if any(substring in c for c in classes):
+            return el
+    return None
+
+
+# ============================================================
+# RC SCRAPER (HTML based)
+# ============================================================
+
 def get_rc(vehicle):
-    if not RC_URL:
+    html = fetch_page(RC_URL + vehicle)
+    if not html:
         return {}
 
-    data = get_next_data(RC_URL + vehicle)
-    if not data:
-        return {}
+    soup = BeautifulSoup(html, "html.parser")
+    result = {"vehicle_number": vehicle}
 
-    props = data.get("props", {}).get("pageProps", {})
-    v = (
-        props.get("vehicleDetails")
-        or props.get("vehicle")
-        or props.get("vehicleInfo")
-        or {}
-    )
+    # --- Make & Model ---
+    el = class_contains(soup, "p", "vehicalModel")
+    if el:
+        result["make_model"] = el.get_text(strip=True)
 
-    return {
-        "vehicle_number": vehicle,
-        "make_model": v.get("makeModel"),
-        "owner_name": v.get("ownerName"),
-        "vehicle_class": v.get("vehicleClass"),
-        "fuel_type": v.get("fuelType"),
-        "fuel_norms": v.get("fuelNorms"),
-        "registration_date": v.get("registrationDate"),
-        "fitness_upto": v.get("fitnessUpto"),
-        "insurance_upto": v.get("insuranceUpto"),
-        "insurance_status": v.get("insuranceStatus"),
-        "rc_status": v.get("rcStatus"),
-        "unloaded_weight": v.get("unladenWeight"),
-        "number_of_seats": v.get("seatCapacity"),
-    }
+    # --- Owner Name ---
+    el = class_contains(soup, "p", "ownerName")
+    if el:
+        result["owner_name"] = el.get_text(strip=True)
 
+    # --- Insurance Expiry (from banner text) ---
+    for p in soup.find_all("p"):
+        text = p.get_text(strip=True)
+        if "Insurance Expired on" in text:
+            # "🚨 Insurance Expired on 09-Aug-2025"
+            try:
+                result["insurance_upto"] = text.split("on")[-1].strip()
+            except Exception:
+                pass
+            result["insurance_status"] = "Expired"
+            break
 
-def get_rto(vehicle):
-    if not RTO_URL:
-        return {}
-
-    data = get_next_data(RTO_URL + vehicle)
-    if not data:
-        return {}
-
-    messages = (
-        data.get("props", {})
-        .get("pageProps", {})
-        .get("rtoDetailsReponse", {})
-        .get("webSections", [{}])[0]
-        .get("messages", [])
-    )
-
-    result = {}
-    for item in messages:
-        title = item.get("title")
-        value = item.get("subtitle")
-        if not title or not value:
+    # --- RTO section (it's on the RC page too) ---
+    rto_items = soup.find_all("div", class_=lambda c: c and "detailItem" in c)
+    for item in rto_items:
+        label_el = item.find("p", class_=lambda c: c and "itemText" in c)
+        value_el = item.find("p", class_=lambda c: c and "itemSubTitle" in c)
+        if not label_el or not value_el:
             continue
 
-        if title == "Number":
+        label = label_el.get_text(strip=True)
+        value = value_el.get_text(strip=True)
+
+        if label == "Number":
             result["rto_code"] = value
-        elif title == "Registered RTO":
+        elif label == "Registered RTO":
             result["address"] = value
-        elif title == "State":
+        elif label == "State":
             result["state"] = value
-        elif title == "RTO Phone number":
+        elif label == "RTO Phone number":
             result["phone"] = clean_phone(value)
-        elif title == "Website":
+        elif label == "Website":
             result["website"] = value
 
     return result
 
 
+# ============================================================
+# RTO SCRAPER (dedicated RTO page)
+# ============================================================
+
+def get_rto(vehicle):
+    html = fetch_page(RTO_URL + vehicle)
+    if not html:
+        return {}
+
+    soup = BeautifulSoup(html, "html.parser")
+    result = {}
+
+    rto_items = soup.find_all("div", class_=lambda c: c and "detailItem" in c)
+    for item in rto_items:
+        label_el = item.find("p", class_=lambda c: c and "itemText" in c)
+        value_el = item.find("p", class_=lambda c: c and "itemSubTitle" in c)
+        if not label_el or not value_el:
+            continue
+
+        label = label_el.get_text(strip=True)
+        value = value_el.get_text(strip=True)
+
+        if label == "Number":
+            result["rto_code"] = value
+        elif label == "Registered RTO":
+            result["address"] = value
+        elif label == "State":
+            result["state"] = value
+        elif label == "RTO Phone number":
+            result["phone"] = clean_phone(value)
+        elif label == "Website":
+            result["website"] = value
+
+    return result
+
+
+# ============================================================
+# CHALLAN SCRAPER
+# ============================================================
+
 def get_challan(vehicle):
-    if not CHALLAN_URL:
+    html = fetch_page(CHALLAN_URL + vehicle)
+    if not html:
         return {"challan_pending": None, "challan_count": 0, "challans": []}
 
-    data = get_next_data(CHALLAN_URL + vehicle)
-    if not data:
+    soup = BeautifulSoup(html, "html.parser")
+
+    script = soup.find("script", {"id": "__NEXT_DATA__"})
+    if not script or not script.string:
         return {"challan_pending": None, "challan_count": 0, "challans": []}
 
     try:
-        challans = (
-            data.get("props", {})
-            .get("pageProps", {})
-            .get("challans", [])
-        )
-        simplified = [{
-            "challan_number": c.get("challanNumber") or c.get("challan_no"),
-            "date": c.get("date") or c.get("challanDate"),
-            "amount": c.get("amount") or c.get("fineAmount"),
-            "status": c.get("status"),
-            "offence": c.get("offence") or c.get("violation"),
-        } for c in challans]
+        data = json.loads(script.string)
+    except Exception:
+        return {"challan_pending": None, "challan_count": 0, "challans": []}
+
+    try:
+        props = data.get("props", {}).get("pageProps", {})
+        disc = props.get("challanDiscovery", {}) or {}
+        dd = disc.get("discoveryData", {}) or {}
+        tabs = dd.get("tabsData", []) or []
+
+        pending = 0
+        for t in tabs:
+            if t.get("tabId") == "PENDING":
+                pending = t.get("totalChallans", 0)
+                break
 
         return {
-            "challan_pending": len(challans) > 0,
-            "challan_count": len(challans),
-            "challans": simplified,
+            "challan_pending": pending > 0,
+            "challan_count": pending,
+            "challans": []
         }
     except Exception:
         return {"challan_pending": False, "challan_count": 0, "challans": []}
@@ -261,12 +288,11 @@ def handle_veh(query):
     challan = get_challan(vehicle)
 
     if not rc and not rto and not challan.get("challan_count"):
-        payload = build_response({
+        return build_response({
             "type": "veh",
             "query": vehicle,
             "status": "ᴅᴀᴛᴀ ɴᴏᴛ ꜰᴏᴜɴᴅ ❌"
         }, success=False)
-        return payload
 
     merged = {"type": "veh", "query": vehicle, "status": "ᴅᴀᴛᴀ ꜰᴏᴜɴᴅ ✅"}
     merged.update(rc)
@@ -279,27 +305,20 @@ def handle_veh(query):
 
 
 def handle_external(kind, query):
-    """
-    Placeholder for tgid/number lookups.
-    Replace the URL below with your real data source.
-    """
     endpoints = {
         "tgid":   f"https://num-user-rinm.onrender.com/api/{PASSKEY}/tgid/{query}",
         "number": f"https://num-user-rinm.onrender.com/api/{PASSKEY}/number/{query}",
     }
     url = endpoints.get(kind)
     if not url:
-        return build_response({
-            "type": kind, "query": query, "status": "ᴜɴᴋɴᴏᴡɴ ᴛʏᴘᴇ ❌"
-        }, success=False)
-
+        return build_response({"type": kind, "query": query,
+                               "status": "ᴜɴᴋɴᴏᴡɴ ᴛʏᴘᴇ ❌"}, success=False)
     try:
         r = requests.get(url, headers=HEADERS, timeout=20)
         return r.json()
     except Exception:
-        return build_response({
-            "type": kind, "query": query, "status": "ᴇʀʀᴏʀ ❌"
-        }, success=False)
+        return build_response({"type": kind, "query": query,
+                               "status": "ᴇʀʀᴏʀ ❌"}, success=False)
 
 
 # ============================================================
@@ -330,20 +349,17 @@ def lookup(passkey: str, type: str, query: str):
         raise HTTPException(status_code=403, detail="Invalid passkey")
 
     type = type.lower()
-
     if type == "veh":
         return handle_veh(query)
     elif type in ("tgid", "number"):
         return handle_external(type, query)
     else:
-        raise HTTPException(
-            status_code=400,
-            detail="Unknown type. Use: tgid, number, veh"
-        )
+        raise HTTPException(status_code=400,
+                            detail="Unknown type. Use: tgid, number, veh")
 
 
 # ============================================================
-# KEEP-ALIVE (Render free tier)
+# KEEP ALIVE
 # ============================================================
 
 def keep_alive_loop():
@@ -354,7 +370,7 @@ def keep_alive_loop():
             requests.get(SELF_URL, timeout=10)
         except Exception:
             pass
-        time.sleep(840)  # 14 minutes
+        time.sleep(840)
 
 
 @app.on_event("startup")
@@ -371,9 +387,5 @@ def start_keepalive():
 async def custom_http_error(request, exc):
     return JSONResponse(
         status_code=exc.status_code,
-        content=build_response(
-            {"status": exc.detail},
-            success=False
-        )
+        content=build_response({"status": exc.detail}, success=False)
     )
-    
